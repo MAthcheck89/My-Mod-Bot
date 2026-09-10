@@ -3,6 +3,8 @@ import re
 import sqlite3
 import unicodedata
 import threading
+import time
+from collections import defaultdict, deque
 
 from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -24,6 +26,17 @@ LOG_CHANNEL_ID = 1514864605212708944
 AUTO_MUTE_MINUTES = 15
 KICK_STRIKE = 3
 BAN_STRIKE = 3
+
+# Anti-Spam Settings
+SPAM_THRESHOLD = 5
+SPAM_WINDOW = 10           # Time window in seconds to check for repeated messages
+SPAM_TIMEOUT_MINUTES = 30  # Timeout duration when spamming is detected
+user_message_cache = defaultdict(lambda: deque(maxlen=10))
+
+# Anti-Raid Settings
+recent_joins = deque(maxlen=50)
+RAID_JOIN_THRESHOLD = 6
+RAID_WINDOW = 10
 
 
 # =========================================================
@@ -227,6 +240,81 @@ def can_moderate(moderator, target):
 
 
 # =========================================================
+# ANTI-SPAM & ANTI-RAID SYSTEM
+# =========================================================
+
+async def check_anti_spam(message):
+    if message.author.bot or not message.guild:
+        return False
+
+    member = message.author
+    if not isinstance(member, discord.Member):
+        return False
+
+    if member == message.guild.owner or is_moderator(member):
+        return False
+
+    current_time = time.time()
+    user_id = member.id
+    content = message.content
+
+    user_message_cache[user_id].append((content, current_time))
+    recent_msgs = user_message_cache[user_id]
+
+    matching_count = sum(1 for c, t in recent_msgs if c == content and (current_time - t) <= SPAM_WINDOW)
+
+    if matching_count >= SPAM_THRESHOLD:
+        user_message_cache[user_id].clear()
+
+        try:
+            await message.delete()
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            pass
+
+        try:
+            await member.timeout(timedelta(minutes=SPAM_TIMEOUT_MINUTES), reason="Anti-spam: repeating messages")
+        except discord.Forbidden:
+            pass
+
+        await send_mod_log(
+            message.guild,
+            "🛡️ Anti-Spam: User Timed Out",
+            f"**User:** {member.mention} ({member.id})\n"
+            f"**Channel:** {message.channel.mention}\n"
+            f"**Reason:** Repeated the same message {matching_count} times.\n"
+            f"**Action:** Timed out for {SPAM_TIMEOUT_MINUTES} minutes.",
+            color=discord.Color.purple()
+        )
+
+        try:
+            await message.channel.send(f"{member.mention} has been automatically timed out for **{SPAM_TIMEOUT_MINUTES} minutes** for spamming.", delete_after=8)
+        except discord.HTTPException:
+            pass
+
+        return True
+
+    return False
+
+
+@bot.event
+async def on_member_join(member):
+    guild = member.guild
+    current_time = time.time()
+    recent_joins.append(current_time)
+
+    joins_in_window = sum(1 for t in recent_joins if (current_time - t) <= RAID_WINDOW)
+
+    if joins_in_window >= RAID_JOIN_THRESHOLD:
+        await send_mod_log(
+            guild,
+            "🚨 Anti-Raid Alert!",
+            f"**High join rate detected!** {joins_in_window} members joined within {RAID_WINDOW} seconds.\n"
+            f"Potential raid in progress. Please review server security settings.",
+            color=discord.Color.dark_red()
+        )
+
+
+# =========================================================
 # AUTOMATIC PUNISHMENT
 # =========================================================
 
@@ -321,6 +409,9 @@ async def on_message(message):
 
     if contains_blocked_word(message.content):
         await automatic_punishment(message)
+        return
+
+    if await check_anti_spam(message):
         return
 
     await bot.process_commands(message)
