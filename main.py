@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 
 # =========================================================
@@ -120,65 +120,15 @@ async def send_mod_log(guild, title, description, color=discord.Color.red()):
 # =========================================================
 
 BLOCKED_WORDS = [
-    # General profanity
-    "fuck",
-    "fucker",
-    "fucking",
-    "fucked",
-    "motherfuck",
-    "motherfucker",
-    "shit",
-    "shitty",
-    "bullshit",
-    "bitch",
-    "bitches",
-    "bitching",
-    "asshole",
-    "assholes",
-    "dumbass",
-    "jackass",
-    "badass",
-    "crap",
-    "piss",
-    "pissed",
-    "dick",
-    "dicks",
-    "dickhead",
-    "cock",
-    "cocks",
-    "cocksucker",
-    "pussy",
-    "bastard",
-    "damn",
-    "dammit",
-    "hell",
-    "ass",
-
-    # Sexual profanity
-    "slut",
-    "sluts",
-    "whore",
-    "whores",
-    "hoe",
-    "hoes",
-
-    # Common insults & Slurs
-    "idiot",
-    "idiots",
-    "moron",
-    "morons",
-    "stupid",
-    "dumbass",
-    "dumbasses",
-    "retard",
-    "retarded",
-    "nigger",
-    "niger", 
-    "nigga",
-
-    # Harassment
-    "kys",
-    "killyourself",
+    "fuck", "fucker", "fucking", "fucked", "motherfuck", "motherfucker",
+    "shit", "shitty", "bullshit", "bitch", "bitches", "bitching",
+    "asshole", "assholes", "dumbass", "jackass", "badass", "crap",
+    "piss", "pissed", "dick", "dicks", "dickhead", "cock", "cocks",
+    "cocksucker", "pussy", "bastard", "damn", "dammit", "hell", "ass",
+    "slut", "sluts", "whore", "whores", "hoe", "hoes",
+    "idiot", "idiots", "moron", "morons", "stupid", "dumbasses",
+    "retard", "retarded", "nigger", "niger", "nigga",
+    "kys", "killyourself",
 ]
 
 
@@ -190,8 +140,6 @@ def contains_blocked_word(text):
     text_lower = text.lower()
 
     for word in BLOCKED_WORDS:
-        # The '+' catches repeated letters. 
-        # 'a' becomes 'a+', so it matches "a", "aa", "aaaa", etc.
         pattern_chars = [re.escape(char) + r"+" for char in word]
         regex_str = r"[\s.\-_]*".join(pattern_chars)
 
@@ -199,17 +147,10 @@ def contains_blocked_word(text):
             start_pos = match.start()
             end_pos = match.end()
 
-            # Prevent false positives if the blocked word is at the END of a safe word (e.g., "grass")
-            if start_pos > 0:
-                prev_char = text_lower[start_pos - 1]
-                if prev_char.isalnum():
-                    continue
-
-            # Prevent false positives if the blocked word is at the START of a safe word (e.g., "assume")
-            if end_pos < len(text_lower):
-                next_char = text_lower[end_pos]
-                if next_char.isalnum():
-                    continue
+            if start_pos > 0 and text_lower[start_pos - 1].isalnum():
+                continue
+            if end_pos < len(text_lower) and text_lower[end_pos].isalnum():
+                continue
 
             return True
 
@@ -239,7 +180,8 @@ class ModBot(commands.Bot):
 
     async def setup_hook(self):
         await self.tree.sync()
-        print("Slash commands synchronized.")
+        auto_scan_loop.start()
+        print("Slash commands synchronized and auto-scan loop started.")
 
 
 bot = ModBot()
@@ -295,32 +237,19 @@ async def automatic_punishment(message):
     if not isinstance(member, discord.Member):
         return
 
-    if member == guild.owner:
-        return
-
-    if is_moderator(member):
+    if member == guild.owner or is_moderator(member):
         return
 
     bad_message_content = message.content
     channel_mention = message.channel.mention
 
-    # Delete the message
     try:
         await message.delete()
-    except (
-        discord.Forbidden,
-        discord.NotFound,
-        discord.HTTPException
-    ):
+    except (discord.Forbidden, discord.NotFound, discord.HTTPException):
         pass
 
-    # Add strike
-    strikes = add_strike(
-        guild.id,
-        member.id
-    )
+    strikes = add_strike(guild.id, member.id)
     
-    # Send Log
     await send_mod_log(
         guild,
         "🚨 Auto-Mod: Message Deleted",
@@ -331,115 +260,63 @@ async def automatic_punishment(message):
         color=discord.Color.orange()
     )
 
-    # -----------------------------------------------------
-    # STRIKES 1-3
-    # -----------------------------------------------------
-
     if strikes < KICK_STRIKE:
         try:
-            await member.timeout(
-                timedelta(
-                    minutes=AUTO_MUTE_MINUTES
-                ),
-                reason="Automatic moderation"
-            )
+            await member.timeout(timedelta(minutes=AUTO_MUTE_MINUTES), reason="Automatic moderation")
         except discord.Forbidden:
             pass
 
         remaining = KICK_STRIKE - strikes
-
-        if remaining == 1:
-            message_text = (
-                f"{member.mention}, your message was removed.\n"
-                f"⚠️ You now have **{strikes} strike(s)**.\n"
-                f"Your next strike will result in a kick."
-            )
-        else:
-            message_text = (
-                f"{member.mention}, your message was removed.\n"
-                f"⚠️ You now have **{strikes} strike(s)**.\n"
-                f"You have **{remaining} strikes remaining** "
-                f"before an automatic kick."
-            )
-
+        message_text = (
+            f"{member.mention}, your message was removed.\n"
+            f"⚠️ You now have **{strikes} strike(s)**. "
+            f"You have **{remaining} strikes remaining** before an automatic kick."
+        )
         try:
-            await message.channel.send(
-                message_text,
-                delete_after=8
-            )
+            await message.channel.send(message_text, delete_after=8)
         except discord.HTTPException:
             pass
-
-    # -----------------------------------------------------
-    # STRIKE 4 = KICK
-    # -----------------------------------------------------
 
     elif strikes == KICK_STRIKE:
         try:
-            await message.channel.send(
-                f"{member.mention} has reached "
-                f"**{KICK_STRIKE} strikes** and has been kicked.",
-                delete_after=8
-            )
+            await message.channel.send(f"{member.mention} has reached **{KICK_STRIKE} strikes** and has been kicked.", delete_after=8)
         except discord.HTTPException:
             pass
             
         await send_mod_log(
-            guild,
-            "👢 Auto-Mod: User Kicked",
-            f"**User:** {member.mention} ({member.id})\n"
-            f"**Reason:** Reached {KICK_STRIKE} strikes.",
+            guild, "👢 Auto-Mod: User Kicked",
+            f"**User:** {member.mention} ({member.id})\n**Reason:** Reached {KICK_STRIKE} strikes.",
             color=discord.Color.red()
         )
-
         try:
-            await member.kick(
-                reason="Automatic moderation: strike limit reached"
-            )
+            await member.kick(reason="Automatic moderation: strike limit reached")
         except discord.Forbidden:
             pass
 
-    # -----------------------------------------------------
-    # STRIKE 5+ = BAN
-    # -----------------------------------------------------
-
     elif strikes >= BAN_STRIKE:
         try:
-            await message.channel.send(
-                f"{member.mention} has reached "
-                f"**{BAN_STRIKE} strikes** and has been banned.",
-                delete_after=8
-            )
+            await message.channel.send(f"{member.mention} has reached **{BAN_STRIKE} strikes** and has been banned.", delete_after=8)
         except discord.HTTPException:
             pass
             
         await send_mod_log(
-            guild,
-            "🔨 Auto-Mod: User Banned",
-            f"**User:** {member.mention} ({member.id})\n"
-            f"**Reason:** Reached {BAN_STRIKE} strikes.",
+            guild, "🔨 Auto-Mod: User Banned",
+            f"**User:** {member.mention} ({member.id})\n**Reason:** Reached {BAN_STRIKE} strikes.",
             color=discord.Color.dark_red()
         )
-
         try:
-            await member.ban(
-                reason="Automatic moderation: ban strike limit reached",
-                delete_message_seconds=0
-            )
+            await member.ban(reason="Automatic moderation: ban strike limit reached", delete_message_seconds=0)
         except discord.Forbidden:
             pass
 
 
 # =========================================================
-# MESSAGE EVENT (Monitors every channel automatically)
+# MESSAGE EVENT
 # =========================================================
 
 @bot.event
 async def on_message(message):
-    if message.author.bot:
-        return
-
-    if message.guild is None:
+    if message.author.bot or message.guild is None:
         return
 
     if contains_blocked_word(message.content):
@@ -450,498 +327,251 @@ async def on_message(message):
 
 
 # =========================================================
-# /WARN
+# AUTOMATIC BACKGROUND SCAN TASK (Runs every 1 minute)
 # =========================================================
 
-@bot.tree.command(
-    name="warn",
-    description="Warn a member and give them a strike."
-)
-@app_commands.describe(
-    member="The member to warn",
-    reason="Reason for the warning"
-)
-async def warn(
-    interaction,
-    member: discord.Member,
-    reason: str = "No reason provided"
-):
+@tasks.loop(minutes=1)
+async def auto_scan_loop():
+    await bot.wait_until_ready()
+
+    for guild in bot.guilds:
+        log_channel = guild.get_channel(LOG_CHANNEL_ID)
+        
+        if log_channel:
+            try:
+                await log_channel.send(
+                    "🔎 *Channel is being scanned for moderation history...*",
+                    delete_after=15
+                )
+            except discord.HTTPException:
+                pass
+
+        for channel in guild.text_channels:
+            permissions = channel.permissions_for(guild.me)
+            if not permissions.view_channel or not permissions.read_message_history:
+                continue
+
+            try:
+                async for message in channel.history(limit=500, oldest_first=True):
+                    if message.author.bot or not contains_blocked_word(message.content):
+                        continue
+
+                    bad_message_content = message.content
+                    try:
+                        await message.delete()
+                    except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                        pass
+
+                    member = message.author
+                    if not isinstance(member, discord.Member) or member == guild.owner or is_moderator(member):
+                        continue
+
+                    strikes = add_strike(guild.id, member.id)
+                    
+                    await send_mod_log(
+                        guild,
+                        "🔎 Automated Scan: Message Deleted",
+                        f"**User:** {member.mention} ({member.id})\n"
+                        f"**Channel:** {channel.mention}\n"
+                        f"**Strikes:** {strikes}\n"
+                        f"**Message:** {bad_message_content}",
+                        color=discord.Color.gold()
+                    )
+
+                    if strikes < KICK_STRIKE:
+                        try:
+                            await member.timeout(timedelta(minutes=AUTO_MUTE_MINUTES), reason="Automated server scan")
+                        except discord.Forbidden:
+                            pass
+                    elif strikes == KICK_STRIKE:
+                        try:
+                            await member.kick(reason="Automated scan: strike limit")
+                        except discord.Forbidden:
+                            pass
+                    elif strikes >= BAN_STRIKE:
+                        try:
+                            await member.ban(reason="Automated scan: ban strike limit", delete_message_seconds=0)
+                        except discord.Forbidden:
+                            pass
+
+            except discord.Forbidden:
+                print(f"Cannot scan #{channel.name}")
+            except discord.HTTPException as error:
+                print(f"Error scanning #{channel.name}: {error}")
+
+
+# =========================================================
+# STANDARD COMMANDS
+# =========================================================
+
+@bot.tree.command(name="warn", description="Warn a member and give them a strike.")
+@app_commands.describe(member="The member to warn", reason="Reason for the warning")
+async def warn(interaction, member: discord.Member, reason: str = "No reason provided"):
     moderator = interaction.user
-
-    if not isinstance(moderator, discord.Member):
+    if not isinstance(moderator, discord.Member) or not is_moderator(moderator):
+        await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
         return
-
-    if not is_moderator(moderator):
-        await interaction.response.send_message(
-            "❌ You don't have permission to use this command.",
-            ephemeral=True
-        )
-        return
-
     if not can_moderate(moderator, member):
-        await interaction.response.send_message(
-            "❌ You cannot moderate this member.",
-            ephemeral=True
-        )
+        await interaction.response.send_message("❌ You cannot moderate this member.", ephemeral=True)
         return
 
-    strikes = add_strike(
-        interaction.guild.id,
-        member.id
-    )
-    
-    await send_mod_log(
-        interaction.guild,
-        "⚠️ Manual Warning Issued",
-        f"**Target:** {member.mention}\n**Moderator:** {moderator.mention}\n**Reason:** {reason}\n**Total Strikes:** {strikes}",
-        color=discord.Color.yellow()
-    )
-
-    await interaction.response.send_message(
-        f"⚠️ **Warning issued**\n\n"
-        f"Member: {member.mention}\n"
-        f"Reason: {reason}\n"
-        f"Strikes: **{strikes}**"
-    )
+    strikes = add_strike(interaction.guild.id, member.id)
+    await send_mod_log(interaction.guild, "⚠️ Manual Warning Issued", f"**Target:** {member.mention}\n**Moderator:** {moderator.mention}\n**Reason:** {reason}\n**Total Strikes:** {strikes}", color=discord.Color.yellow())
+    await interaction.response.send_message(f"⚠️ **Warning issued**\nMember: {member.mention}\nReason: {reason}\nStrikes: **{strikes}**")
 
 
-# =========================================================
-# /MUTE
-# =========================================================
-
-@bot.tree.command(
-    name="mute",
-    description="Timeout a member."
-)
-@app_commands.describe(
-    member="The member to mute",
-    minutes="Duration in minutes",
-    reason="Reason for the timeout"
-)
-async def mute(
-    interaction,
-    member: discord.Member,
-    minutes: int = 15,
-    reason: str = "No reason provided"
-):
+@bot.tree.command(name="mute", description="Timeout a member.")
+@app_commands.describe(member="The member to mute", minutes="Duration in minutes", reason="Reason for the timeout")
+async def mute(interaction, member: discord.Member, minutes: int = 15, reason: str = "No reason provided"):
     moderator = interaction.user
-
-    if not isinstance(moderator, discord.Member):
+    if not isinstance(moderator, discord.Member) or not moderator.guild_permissions.moderate_members:
+        await interaction.response.send_message("❌ You don't have permission to mute members.", ephemeral=True)
         return
-
-    if not moderator.guild_permissions.moderate_members:
-        await interaction.response.send_message(
-            "❌ You don't have permission to mute members.",
-            ephemeral=True
-        )
-        return
-
     if not can_moderate(moderator, member):
-        await interaction.response.send_message(
-            "❌ You cannot moderate this member.",
-            ephemeral=True
-        )
-        return
-
-    if minutes < 1:
-        await interaction.response.send_message(
-            "❌ Duration must be at least 1 minute.",
-            ephemeral=True
-        )
-        return
-
-    if minutes > 40320:
-        await interaction.response.send_message(
-            "❌ Discord's maximum timeout is 28 days.",
-            ephemeral=True
-        )
+        await interaction.response.send_message("❌ You cannot moderate this member.", ephemeral=True)
         return
 
     try:
-        await member.timeout(
-            timedelta(minutes=minutes),
-            reason=reason
-        )
-        
-        await send_mod_log(
-            interaction.guild,
-            "🔇 User Timed Out",
-            f"**Target:** {member.mention}\n**Moderator:** {moderator.mention}\n**Duration:** {minutes} minutes\n**Reason:** {reason}",
-            color=discord.Color.orange()
-        )
-        
-        await interaction.response.send_message(
-            f"🔇 {member.mention} has been timed out "
-            f"for **{minutes} minutes**.\n"
-            f"Reason: {reason}"
-        )
+        await member.timeout(timedelta(minutes=minutes), reason=reason)
+        await send_mod_log(interaction.guild, "🔇 User Timed Out", f"**Target:** {member.mention}\n**Moderator:** {moderator.mention}\n**Duration:** {minutes} minutes\n**Reason:** {reason}", color=discord.Color.orange())
+        await interaction.response.send_message(f"🔇 {member.mention} has been timed out for **{minutes} minutes**.")
     except discord.Forbidden:
-        await interaction.response.send_message(
-            "❌ I don't have permission to timeout that member.",
-            ephemeral=True
-        )
+        await interaction.response.send_message("❌ I don't have permission to timeout that member.", ephemeral=True)
 
 
-# =========================================================
-# /KICK
-# =========================================================
-
-@bot.tree.command(
-    name="kick",
-    description="Kick a member."
-)
-@app_commands.describe(
-    member="The member to kick",
-    reason="Reason for the kick"
-)
-async def kick(
-    interaction,
-    member: discord.Member,
-    reason: str = "No reason provided"
-):
+@bot.tree.command(name="kick", description="Kick a member.")
+@app_commands.describe(member="The member to kick", reason="Reason for the kick")
+async def kick(interaction, member: discord.Member, reason: str = "No reason provided"):
     moderator = interaction.user
-
-    if not isinstance(moderator, discord.Member):
+    if not isinstance(moderator, discord.Member) or not moderator.guild_permissions.kick_members:
+        await interaction.response.send_message("❌ You don't have permission to kick members.", ephemeral=True)
         return
-
-    if not moderator.guild_permissions.kick_members:
-        await interaction.response.send_message(
-            "❌ You don't have permission to kick members.",
-            ephemeral=True
-        )
-        return
-
     if not can_moderate(moderator, member):
-        await interaction.response.send_message(
-            "❌ You cannot kick this member.",
-            ephemeral=True
-        )
+        await interaction.response.send_message("❌ You cannot kick this member.", ephemeral=True)
         return
 
     try:
         await member.kick(reason=reason)
-        
-        await send_mod_log(
-            interaction.guild,
-            "👢 User Kicked",
-            f"**Target:** {member.mention}\n**Moderator:** {moderator.mention}\n**Reason:** {reason}",
-            color=discord.Color.red()
-        )
-        
-        await interaction.response.send_message(
-            f"👢 {member.mention} was kicked.\n"
-            f"Reason: {reason}"
-        )
+        await send_mod_log(interaction.guild, "👢 User Kicked", f"**Target:** {member.mention}\n**Moderator:** {moderator.mention}\n**Reason:** {reason}", color=discord.Color.red())
+        await interaction.response.send_message(f"👢 {member.mention} was kicked.\nReason: {reason}")
     except discord.Forbidden:
-        await interaction.response.send_message(
-            "❌ I don't have permission to kick that member.",
-            ephemeral=True
-        )
+        await interaction.response.send_message("❌ I don't have permission to kick that member.", ephemeral=True)
 
 
-# =========================================================
-# /BAN
-# =========================================================
-
-@bot.tree.command(
-    name="ban",
-    description="Ban a member."
-)
-@app_commands.describe(
-    member="The member to ban",
-    reason="Reason for the ban"
-)
-async def ban(
-    interaction,
-    member: discord.Member,
-    reason: str = "No reason provided"
-):
+@bot.tree.command(name="ban", description="Ban a member.")
+@app_commands.describe(member="The member to ban", reason="Reason for the ban")
+async def ban(interaction, member: discord.Member, reason: str = "No reason provided"):
     moderator = interaction.user
-
-    if not isinstance(moderator, discord.Member):
+    if not isinstance(moderator, discord.Member) or not moderator.guild_permissions.ban_members:
+        await interaction.response.send_message("❌ You don't have permission to ban members.", ephemeral=True)
         return
-
-    if not moderator.guild_permissions.ban_members:
-        await interaction.response.send_message(
-            "❌ You don't have permission to ban members.",
-            ephemeral=True
-        )
-        return
-
     if not can_moderate(moderator, member):
-        await interaction.response.send_message(
-            "❌ You cannot ban this member.",
-            ephemeral=True
-        )
+        await interaction.response.send_message("❌ You cannot ban this member.", ephemeral=True)
         return
 
     try:
-        await member.ban(
-            reason=reason,
-            delete_message_seconds=0
-        )
-        
-        await send_mod_log(
-            interaction.guild,
-            "🔨 User Banned",
-            f"**Target:** {member.mention}\n**Moderator:** {moderator.mention}\n**Reason:** {reason}",
-            color=discord.Color.dark_red()
-        )
-        
-        await interaction.response.send_message(
-            f"🔨 {member.mention} was banned.\n"
-            f"Reason: {reason}"
-        )
+        await member.ban(reason=reason, delete_message_seconds=0)
+        await send_mod_log(interaction.guild, "🔨 User Banned", f"**Target:** {member.mention}\n**Moderator:** {moderator.mention}\n**Reason:** {reason}", color=discord.Color.dark_red())
+        await interaction.response.send_message(f"🔨 {member.mention} was banned.\nReason: {reason}")
     except discord.Forbidden:
-        await interaction.response.send_message(
-            "❌ I don't have permission to ban that member.",
-            ephemeral=True
-        )
+        await interaction.response.send_message("❌ I don't have permission to ban that member.", ephemeral=True)
 
 
-# =========================================================
-# /STRIKES
-# =========================================================
-
-@bot.tree.command(
-    name="strikes",
-    description="Check a member's strikes."
-)
-@app_commands.describe(
-    member="The member to check"
-)
-async def strikes(
-    interaction,
-    member: discord.Member
-):
-    amount = get_strikes(
-        interaction.guild.id,
-        member.id
-    )
-    await interaction.response.send_message(
-        f"📋 {member.mention} has **{amount} strike(s)**."
-    )
+@bot.tree.command(name="strikes", description="Check a member's strikes.")
+@app_commands.describe(member="The member to check")
+async def strikes(interaction, member: discord.Member):
+    amount = get_strikes(interaction.guild.id, member.id)
+    await interaction.response.send_message(f"📋 {member.mention} has **{amount} strike(s)**.")
 
 
-# =========================================================
-# /CLEARSTRIKES
-# =========================================================
-
-@bot.tree.command(
-    name="clearstrikes",
-    description="Clear a member's strikes."
-)
-@app_commands.describe(
-    member="The member whose strikes should be cleared"
-)
-async def clearstrikes(
-    interaction,
-    member: discord.Member
-):
+@bot.tree.command(name="clearstrikes", description="Clear a member's strikes.")
+@app_commands.describe(member="The member whose strikes should be cleared")
+async def clearstrikes(interaction, member: discord.Member):
     moderator = interaction.user
-
-    if not isinstance(moderator, discord.Member):
+    if not isinstance(moderator, discord.Member) or not is_moderator(moderator):
+        await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
         return
 
-    if not is_moderator(moderator):
-        await interaction.response.send_message(
-            "❌ You don't have permission to use this command.",
-            ephemeral=True
-        )
-        return
-
-    clear_strikes(
-        interaction.guild.id,
-        member.id
-    )
-    
-    await send_mod_log(
-        interaction.guild,
-        "🔄 Strikes Cleared",
-        f"**Target:** {member.mention}\n**Moderator:** {moderator.mention}",
-        color=discord.Color.green()
-    )
-
-    await interaction.response.send_message(
-        f"✅ Cleared all strikes for {member.mention}."
-    )
+    clear_strikes(interaction.guild.id, member.id)
+    await send_mod_log(interaction.guild, "🔄 Strikes Cleared", f"**Target:** {member.mention}\n**Moderator:** {moderator.mention}", color=discord.Color.green())
+    await interaction.response.send_message(f"✅ Cleared all strikes for {member.mention}.")
 
 
-# =========================================================
-# /SCAN (Announces channel status for 15 seconds)
-# =========================================================
-
-@bot.tree.command(
-    name="scan",
-    description="Scan accessible message history for blocked words."
-)
+@bot.tree.command(name="scan", description="Scan accessible message history for blocked words.")
 async def scan(interaction):
     moderator = interaction.user
-
-    if not isinstance(moderator, discord.Member):
-        return
-
-    if not moderator.guild_permissions.manage_messages:
-        await interaction.response.send_message(
-            "❌ You need **Manage Messages** to use /scan.",
-            ephemeral=True
-        )
+    if not isinstance(moderator, discord.Member) or not moderator.guild_permissions.manage_messages:
+        await interaction.response.send_message("❌ You need **Manage Messages** to use /scan.", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
-
     guild = interaction.guild
     total_messages = 0
     flagged_messages = 0
     channels_scanned = 0
 
-    for channel in guild.text_channels:
-        permissions = channel.permissions_for(guild.me)
-
-        if not permissions.view_channel:
-            continue
-
-        if not permissions.read_message_history:
-            continue
-
-        channels_scanned += 1
-
-        # Send status announcement that stays for 15 seconds
+    log_channel = guild.get_channel(LOG_CHANNEL_ID)
+    if log_channel:
         try:
-            await channel.send(
+            await log_channel.send(
                 f"🔎 *Channel is being scanned for moderation history...*",
                 delete_after=15
             )
         except discord.HTTPException:
             pass
 
+    for channel in guild.text_channels:
+        permissions = channel.permissions_for(guild.me)
+        if not permissions.view_channel or not permissions.read_message_history:
+            continue
+
+        channels_scanned += 1
         try:
-            async for message in channel.history(
-                limit=500,
-                oldest_first=True
-            ):
+            async for message in channel.history(limit=500, oldest_first=True):
                 total_messages += 1
-
-                if message.author.bot:
-                    continue
-
-                if not contains_blocked_word(message.content):
+                if message.author.bot or not contains_blocked_word(message.content):
                     continue
 
                 flagged_messages += 1
-                
                 bad_message_content = message.content
-
                 try:
                     await message.delete()
-                except (
-                    discord.Forbidden,
-                    discord.NotFound,
-                    discord.HTTPException
-                ):
+                except (discord.Forbidden, discord.NotFound, discord.HTTPException):
                     pass
 
                 member = message.author
-
-                if not isinstance(member, discord.Member):
+                if not isinstance(member, discord.Member) or member == guild.owner or is_moderator(member):
                     continue
 
-                if member == guild.owner:
-                    continue
-
-                if is_moderator(member):
-                    continue
-
-                strikes = add_strike(
-                    guild.id,
-                    member.id
-                )
-                
+                strikes = add_strike(guild.id, member.id)
                 await send_mod_log(
                     guild,
                     "🔎 Historical Scan: Message Deleted",
-                    f"**User:** {member.mention} ({member.id})\n"
-                    f"**Channel:** {channel.mention}\n"
-                    f"**Strikes:** {strikes}\n"
-                    f"**Message:** {bad_message_content}",
+                    f"**User:** {member.mention} ({member.id})\n**Channel:** {channel.mention}\n**Strikes:** {strikes}\n**Message:** {bad_message_content}",
                     color=discord.Color.gold()
                 )
 
                 if strikes < KICK_STRIKE:
                     try:
-                        await member.timeout(
-                            timedelta(minutes=AUTO_MUTE_MINUTES),
-                            reason="Server scan"
-                        )
+                        await member.timeout(timedelta(minutes=AUTO_MUTE_MINUTES), reason="Server scan")
                     except discord.Forbidden:
                         pass
-
                 elif strikes == KICK_STRIKE:
                     try:
-                        await member.kick(
-                            reason="Server scan: strike limit"
-                        )
-                        await send_mod_log(
-                            guild,
-                            "👢 Historical Scan: User Kicked",
-                            f"**User:** {member.mention}\n**Reason:** Reached {KICK_STRIKE} strikes during manual scan.",
-                            color=discord.Color.red()
-                        )
+                        await member.kick(reason="Server scan: strike limit")
                     except discord.Forbidden:
                         pass
-
                 elif strikes >= BAN_STRIKE:
                     try:
-                        await member.ban(
-                            reason="Server scan: ban strike limit",
-                            delete_message_seconds=0
-                        )
-                        await send_mod_log(
-                            guild,
-                            "🔨 Historical Scan: User Banned",
-                            f"**User:** {member.mention}\n**Reason:** Reached {BAN_STRIKE} strikes during manual scan.",
-                            color=discord.Color.dark_red()
-                        )
+                        await member.ban(reason="Server scan: ban strike limit", delete_message_seconds=0)
                     except discord.Forbidden:
                         pass
-
         except discord.Forbidden:
             print(f"Cannot scan #{channel.name}")
-        except discord.HTTPException as error:
-            print(f"Error scanning #{channel.name}: {error}")
 
     await interaction.followup.send(
-        f"🔎 **Server scan complete!**\n\n"
-        f"Channels scanned: **{channels_scanned}**\n"
-        f"Messages checked: **{total_messages:,}**\n"
-        f"Flagged messages: **{flagged_messages:,}**"
+        f"🔎 **Server scan complete!**\nChannels scanned: **{channels_scanned}**\nMessages checked: **{total_messages:,}**\nFlagged messages: **{flagged_messages:,}**"
     )
-
-
-# =========================================================
-# COMMAND ERROR HANDLER
-# =========================================================
-
-@bot.tree.error
-async def command_error(
-    interaction,
-    error
-):
-    print(f"Command error: {error}")
-
-    try:
-        if interaction.response.is_done():
-            await interaction.followup.send(
-                "❌ Something went wrong.",
-                ephemeral=True
-            )
-        else:
-            await interaction.response.send_message(
-                "❌ Something went wrong.",
-                ephemeral=True
-            )
-    except discord.HTTPException:
-        pass
 
 
 # =========================================================
@@ -951,37 +581,17 @@ async def command_error(
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
-        self.send_header(
-            "Content-Type",
-            "text/plain"
-        )
+        self.send_header("Content-Type", "text/plain")
         self.end_headers()
-        self.wfile.write(
-            b"Discord-Mod-Bot is online!"
-        )
+        self.wfile.write(b"Discord-Mod-Bot is online!")
 
-    def log_message(
-        self,
-        format,
-        *args
-    ):
+    def log_message(self, format, *args):
         pass
 
 
 def run_web_server():
-    port = int(
-        os.environ.get(
-            "PORT",
-            10000
-        )
-    )
-    server = HTTPServer(
-        ("0.0.0.0", port),
-        HealthHandler
-    )
-    print(
-        f"Web server running on port {port}"
-    )
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
     server.serve_forever()
 
 
@@ -990,14 +600,9 @@ def run_web_server():
 # =========================================================
 
 if not TOKEN:
-    raise RuntimeError(
-        "DISCORD_TOKEN environment variable is missing."
-    )
+    raise RuntimeError("DISCORD_TOKEN environment variable is missing.")
 
-web_thread = threading.Thread(
-    target=run_web_server,
-    daemon=True
-)
+web_thread = threading.Thread(target=run_web_server, daemon=True)
 web_thread.start()
 
 bot.run(TOKEN)
