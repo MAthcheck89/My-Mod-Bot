@@ -18,9 +18,12 @@ from discord.ext import commands
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
+# 🔴 REPLACE THIS WITH YOUR ACTUAL #MOD-LOGS CHANNEL ID 🔴
+LOG_CHANNEL_ID = 1514864605212708944  
+
 AUTO_MUTE_MINUTES = 15
-KICK_STRIKE = 4
-BAN_STRIKE = 5
+KICK_STRIKE = 3
+BAN_STRIKE = 3
 
 
 # =========================================================
@@ -90,6 +93,26 @@ def clear_strikes(guild_id, user_id):
             (guild_id, user_id)
         )
         db.commit()
+
+
+# =========================================================
+# MOD LOGGING HELPER
+# =========================================================
+
+async def send_mod_log(guild, title, description, color=discord.Color.red()):
+    if not LOG_CHANNEL_ID:
+        return
+        
+    log_channel = guild.get_channel(LOG_CHANNEL_ID)
+    if not log_channel:
+        print("Warning: Log channel not found. Check the LOG_CHANNEL_ID.")
+        return
+        
+    embed = discord.Embed(title=title, description=description, color=color)
+    try:
+        await log_channel.send(embed=embed)
+    except discord.Forbidden:
+        print("Missing permissions to send messages in the log channel.")
 
 
 # =========================================================
@@ -278,6 +301,10 @@ async def automatic_punishment(message):
     if is_moderator(member):
         return
 
+    # Keep a copy of the message for logging before it gets deleted
+    bad_message_content = message.content
+    channel_mention = message.channel.mention
+
     # Delete the message
     try:
         await message.delete()
@@ -293,6 +320,17 @@ async def automatic_punishment(message):
         guild.id,
         member.id
     )
+    
+    # Send Log
+    await send_mod_log(
+        guild,
+        "🚨 Auto-Mod: Message Deleted",
+        f"**User:** {member.mention} ({member.id})\n"
+        f"**Channel:** {channel_mention}\n"
+        f"**Strikes:** {strikes}\n"
+        f"**Message:** {bad_message_content}",
+        color=discord.Color.orange()
+    )
 
     # -----------------------------------------------------
     # STRIKES 1-3
@@ -307,10 +345,7 @@ async def automatic_punishment(message):
                 reason="Automatic moderation"
             )
         except discord.Forbidden:
-            print(
-                f"Could not timeout {member}. "
-                "Check bot permissions and role position."
-            )
+            pass
 
         remaining = KICK_STRIKE - strikes
 
@@ -349,15 +384,21 @@ async def automatic_punishment(message):
             )
         except discord.HTTPException:
             pass
+            
+        await send_mod_log(
+            guild,
+            "👢 Auto-Mod: User Kicked",
+            f"**User:** {member.mention} ({member.id})\n"
+            f"**Reason:** Reached {KICK_STRIKE} strikes.",
+            color=discord.Color.red()
+        )
 
         try:
             await member.kick(
                 reason="Automatic moderation: strike limit reached"
             )
         except discord.Forbidden:
-            print(
-                f"Could not kick {member}."
-            )
+            pass
 
     # -----------------------------------------------------
     # STRIKE 5+ = BAN
@@ -372,6 +413,14 @@ async def automatic_punishment(message):
             )
         except discord.HTTPException:
             pass
+            
+        await send_mod_log(
+            guild,
+            "🔨 Auto-Mod: User Banned",
+            f"**User:** {member.mention} ({member.id})\n"
+            f"**Reason:** Reached {BAN_STRIKE} strikes.",
+            color=discord.Color.dark_red()
+        )
 
         try:
             await member.ban(
@@ -379,9 +428,7 @@ async def automatic_punishment(message):
                 delete_message_seconds=0
             )
         except discord.Forbidden:
-            print(
-                f"Could not ban {member}."
-            )
+            pass
 
 
 # =========================================================
@@ -442,6 +489,13 @@ async def warn(
     strikes = add_strike(
         interaction.guild.id,
         member.id
+    )
+    
+    await send_mod_log(
+        interaction.guild,
+        "⚠️ Manual Warning Issued",
+        f"**Target:** {member.mention}\n**Moderator:** {moderator.mention}\n**Reason:** {reason}\n**Total Strikes:** {strikes}",
+        color=discord.Color.yellow()
     )
 
     await interaction.response.send_message(
@@ -509,6 +563,14 @@ async def mute(
             timedelta(minutes=minutes),
             reason=reason
         )
+        
+        await send_mod_log(
+            interaction.guild,
+            "🔇 User Timed Out",
+            f"**Target:** {member.mention}\n**Moderator:** {moderator.mention}\n**Duration:** {minutes} minutes\n**Reason:** {reason}",
+            color=discord.Color.orange()
+        )
+        
         await interaction.response.send_message(
             f"🔇 {member.mention} has been timed out "
             f"for **{minutes} minutes**.\n"
@@ -559,6 +621,14 @@ async def kick(
 
     try:
         await member.kick(reason=reason)
+        
+        await send_mod_log(
+            interaction.guild,
+            "👢 User Kicked",
+            f"**Target:** {member.mention}\n**Moderator:** {moderator.mention}\n**Reason:** {reason}",
+            color=discord.Color.red()
+        )
+        
         await interaction.response.send_message(
             f"👢 {member.mention} was kicked.\n"
             f"Reason: {reason}"
@@ -611,6 +681,14 @@ async def ban(
             reason=reason,
             delete_message_seconds=0
         )
+        
+        await send_mod_log(
+            interaction.guild,
+            "🔨 User Banned",
+            f"**Target:** {member.mention}\n**Moderator:** {moderator.mention}\n**Reason:** {reason}",
+            color=discord.Color.dark_red()
+        )
+        
         await interaction.response.send_message(
             f"🔨 {member.mention} was banned.\n"
             f"Reason: {reason}"
@@ -676,6 +754,13 @@ async def clearstrikes(
     clear_strikes(
         interaction.guild.id,
         member.id
+    )
+    
+    await send_mod_log(
+        interaction.guild,
+        "🔄 Strikes Cleared",
+        f"**Target:** {member.mention}\n**Moderator:** {moderator.mention}",
+        color=discord.Color.green()
     )
 
     await interaction.response.send_message(
@@ -745,6 +830,8 @@ async def scan(interaction):
                     continue
 
                 flagged_messages += 1
+                
+                bad_message_content = message.content
 
                 try:
                     await message.delete()
@@ -770,6 +857,16 @@ async def scan(interaction):
                     guild.id,
                     member.id
                 )
+                
+                await send_mod_log(
+                    guild,
+                    "🔎 Historical Scan: Message Deleted",
+                    f"**User:** {member.mention} ({member.id})\n"
+                    f"**Channel:** {channel.mention}\n"
+                    f"**Strikes:** {strikes}\n"
+                    f"**Message:** {bad_message_content}",
+                    color=discord.Color.gold()
+                )
 
                 if strikes < KICK_STRIKE:
                     try:
@@ -785,6 +882,12 @@ async def scan(interaction):
                         await member.kick(
                             reason="Server scan: strike limit"
                         )
+                        await send_mod_log(
+                            guild,
+                            "👢 Historical Scan: User Kicked",
+                            f"**User:** {member.mention}\n**Reason:** Reached {KICK_STRIKE} strikes during manual scan.",
+                            color=discord.Color.red()
+                        )
                     except discord.Forbidden:
                         pass
 
@@ -793,6 +896,12 @@ async def scan(interaction):
                         await member.ban(
                             reason="Server scan: ban strike limit",
                             delete_message_seconds=0
+                        )
+                        await send_mod_log(
+                            guild,
+                            "🔨 Historical Scan: User Banned",
+                            f"**User:** {member.mention}\n**Reason:** Reached {BAN_STRIKE} strikes during manual scan.",
+                            color=discord.Color.dark_red()
                         )
                     except discord.Forbidden:
                         pass
