@@ -116,11 +116,61 @@ def clear_strikes(guild_id, user_id):
 # =========================================================
 
 BLOCKED_WORDS = [
-    # Add your moderation terms here.
-    #
-    # Example:
-    # "example",
-    # "anotherword",
+    # General profanity
+    "fuck",
+    "fucker",
+    "fucking",
+    "fucked",
+    "motherfuck",
+    "motherfucker",
+    "shit",
+    "shitty",
+    "bullshit",
+    "bitch",
+    "bitches",
+    "bitching",
+    "asshole",
+    "assholes",
+    "dumbass",
+    "jackass",
+    "badass",
+    "crap",
+    "piss",
+    "pissed",
+    "dick",
+    "dicks",
+    "dickhead",
+    "cock",
+    "cocks",
+    "cocksucker",
+    "pussy",
+    "bastard",
+    "damn",
+    "dammit",
+    "hell",
+
+    # Sexual profanity
+    "slut",
+    "sluts",
+    "whore",
+    "whores",
+    "hoe",
+    "hoes",
+
+    # Common insults
+    "idiot",
+    "idiots",
+    "moron",
+    "morons",
+    "stupid",
+    "dumbass",
+    "dumbasses",
+    "retard",
+    "retarded",
+
+    # Harassment
+    "kys",
+    "killyourself",
 ]
 
 
