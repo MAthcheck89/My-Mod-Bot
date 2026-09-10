@@ -156,31 +156,26 @@ BLOCKED_WORDS = [
 
 
 # =========================================================
-# TEXT NORMALIZATION
+# TEXT NORMALIZATION & BYPASS DETECTION
 # =========================================================
 
-def normalize_text(text):
-    text = text.lower()
-    text = unicodedata.normalize("NFKD", text)
-    text = "".join(
-        char for char in text
-        if not unicodedata.combining(char)
-    )
-    text = re.sub(r"[^a-z0-9]", "", text)
-    return text
-
-
-# Pre-normalize blocked words once at startup for fast, whole-word matching
-NORMALIZED_BLOCKED_WORDS = {normalize_text(word) for word in BLOCKED_WORDS if normalize_text(word)}
-
 def contains_blocked_word(text):
-    # Extract individual words using regex word boundaries before stripping spaces
-    words = re.findall(r"\b\w+\b", text.lower())
-    
-    for word in words:
-        if normalize_text(word) in NORMALIZED_BLOCKED_WORDS:
+    text_lower = text.lower()
+
+    for word in BLOCKED_WORDS:
+        # Build a regex allowing optional spaces, dots, dashes, or underscores between letters
+        pattern_chars = [re.escape(char) for char in word]
+        regex_str = r"[\s.\-_]*".join(pattern_chars)
+
+        for match in re.finditer(regex_str, text_lower):
+            end_pos = match.end()
+            # Prevent false positives like "hello" triggering "hell" by checking trailing characters
+            if end_pos < len(text_lower):
+                next_char = text_lower[end_pos]
+                if next_char.isalnum():
+                    continue
             return True
-            
+
     return False
 
 
@@ -376,7 +371,7 @@ async def automatic_punishment(message):
 
 
 # =========================================================
-# MESSAGE EVENT
+# MESSAGE EVENT (Monitors every channel automatically)
 # =========================================================
 
 @bot.event
@@ -675,7 +670,7 @@ async def clearstrikes(
 
 
 # =========================================================
-# /SCAN
+# /SCAN (Announces channel status during inspection)
 # =========================================================
 
 @bot.tree.command(
@@ -713,8 +708,16 @@ async def scan(interaction):
 
         channels_scanned += 1
 
+        # Send status announcement in the channel being scanned
         try:
-            # Capped limit at 500 per channel to prevent rate-limit exhaustion and hanging
+            await channel.send(
+                f"🔎 *Channel is being scanned for moderation history...*",
+                delete_after=6
+            )
+        except discord.HTTPException:
+            pass
+
+        try:
             async for message in channel.history(
                 limit=500,
                 oldest_first=True
