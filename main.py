@@ -24,91 +24,72 @@ BAN_STRIKE = 5
 
 
 # =========================================================
-# DATABASE
+# DATABASE SETUP & HELPERS
 # =========================================================
 
-db = sqlite3.connect(
-    "moderation.db",
-    check_same_thread=False
-)
+def init_db():
+    with sqlite3.connect("moderation.db") as db:
+        cursor = db.cursor()
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS strikes (
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            strikes INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (guild_id, user_id)
+        )
+        """)
+        db.commit()
 
-cursor = db.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS strikes (
-    guild_id INTEGER NOT NULL,
-    user_id INTEGER NOT NULL,
-    strikes INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (guild_id, user_id)
-)
-""")
-
-db.commit()
+init_db()
 
 
 def get_strikes(guild_id, user_id):
-
-    cursor.execute(
-        """
-        SELECT strikes
-        FROM strikes
-        WHERE guild_id = ? AND user_id = ?
-        """,
-        (guild_id, user_id)
-    )
-
-    result = cursor.fetchone()
-
-    if result is None:
-        return 0
-
-    return result[0]
+    with sqlite3.connect("moderation.db") as db:
+        cursor = db.cursor()
+        cursor.execute(
+            """
+            SELECT strikes
+            FROM strikes
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (guild_id, user_id)
+        )
+        result = cursor.fetchone()
+        return result[0] if result else 0
 
 
 def add_strike(guild_id, user_id):
-
-    current = get_strikes(
-        guild_id,
-        user_id
-    )
-
+    current = get_strikes(guild_id, user_id)
     new_amount = current + 1
 
-    cursor.execute(
-        """
-        INSERT INTO strikes
-        (guild_id, user_id, strikes)
-        VALUES (?, ?, ?)
-
-        ON CONFLICT(guild_id, user_id)
-        DO UPDATE SET strikes = excluded.strikes
-        """,
-        (
-            guild_id,
-            user_id,
-            new_amount
+    with sqlite3.connect("moderation.db") as db:
+        cursor = db.cursor()
+        cursor.execute(
+            """
+            INSERT INTO strikes
+            (guild_id, user_id, strikes)
+            VALUES (?, ?, ?)
+            ON CONFLICT(guild_id, user_id)
+            DO UPDATE SET strikes = excluded.strikes
+            """,
+            (guild_id, user_id, new_amount)
         )
-    )
-
-    db.commit()
+        db.commit()
 
     return new_amount
 
 
 def clear_strikes(guild_id, user_id):
-
-    cursor.execute(
-        """
-        DELETE FROM strikes
-        WHERE guild_id = ? AND user_id = ?
-        """,
-        (
-            guild_id,
-            user_id
+    with sqlite3.connect("moderation.db") as db:
+        cursor = db.cursor()
+        cursor.execute(
+            """
+            DELETE FROM strikes
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (guild_id, user_id)
         )
-    )
-
-    db.commit()
+        db.commit()
 
 
 # =========================================================
@@ -179,43 +160,24 @@ BLOCKED_WORDS = [
 # =========================================================
 
 def normalize_text(text):
-
     text = text.lower()
-
-    text = unicodedata.normalize(
-        "NFKD",
-        text
-    )
-
+    text = unicodedata.normalize("NFKD", text)
     text = "".join(
-        char
-        for char in text
+        char for char in text
         if not unicodedata.combining(char)
     )
-
-    text = re.sub(
-        r"[^a-z0-9]",
-        "",
-        text
-    )
-
+    text = re.sub(r"[^a-z0-9]", "", text)
     return text
 
 
 def contains_blocked_word(text):
-
     normalized = normalize_text(text)
-
     for word in BLOCKED_WORDS:
-
         normalized_word = normalize_text(word)
-
         if not normalized_word:
             continue
-
         if normalized_word in normalized:
             return True
-
     return False
 
 
@@ -224,7 +186,6 @@ def contains_blocked_word(text):
 # =========================================================
 
 intents = discord.Intents.default()
-
 intents.message_content = True
 intents.members = True
 intents.guilds = True
@@ -235,18 +196,14 @@ intents.guilds = True
 # =========================================================
 
 class ModBot(commands.Bot):
-
     def __init__(self):
-
         super().__init__(
             command_prefix="!",
             intents=intents
         )
 
     async def setup_hook(self):
-
         await self.tree.sync()
-
         print("Slash commands synchronized.")
 
 
@@ -259,7 +216,6 @@ bot = ModBot()
 
 @bot.event
 async def on_ready():
-
     print("=" * 50)
     print(f"Logged in as: {bot.user}")
     print(f"Bot ID: {bot.user.id}")
@@ -273,9 +229,7 @@ async def on_ready():
 # =========================================================
 
 def is_moderator(member):
-
     permissions = member.guild_permissions
-
     return (
         permissions.administrator
         or permissions.manage_messages
@@ -286,16 +240,12 @@ def is_moderator(member):
 
 
 def can_moderate(moderator, target):
-
     if target == moderator:
         return False
-
     if target == moderator.guild.owner:
         return False
-
     if target.top_role >= moderator.top_role:
         return False
-
     return True
 
 
@@ -304,7 +254,6 @@ def can_moderate(moderator, target):
 # =========================================================
 
 async def automatic_punishment(message):
-
     member = message.author
     guild = message.guild
 
@@ -319,15 +268,12 @@ async def automatic_punishment(message):
 
     # Delete the message
     try:
-
         await message.delete()
-
     except (
         discord.Forbidden,
         discord.NotFound,
         discord.HTTPException
     ):
-
         pass
 
     # Add strike
@@ -341,18 +287,14 @@ async def automatic_punishment(message):
     # -----------------------------------------------------
 
     if strikes < KICK_STRIKE:
-
         try:
-
             await member.timeout(
                 timedelta(
                     minutes=AUTO_MUTE_MINUTES
                 ),
                 reason="Automatic moderation"
             )
-
         except discord.Forbidden:
-
             print(
                 f"Could not timeout {member}. "
                 "Check bot permissions and role position."
@@ -361,15 +303,12 @@ async def automatic_punishment(message):
         remaining = KICK_STRIKE - strikes
 
         if remaining == 1:
-
             message_text = (
                 f"{member.mention}, your message was removed.\n"
                 f"⚠️ You now have **{strikes} strike(s)**.\n"
                 f"Your next strike will result in a kick."
             )
-
         else:
-
             message_text = (
                 f"{member.mention}, your message was removed.\n"
                 f"⚠️ You now have **{strikes} strike(s)**.\n"
@@ -378,14 +317,11 @@ async def automatic_punishment(message):
             )
 
         try:
-
             await message.channel.send(
                 message_text,
                 delete_after=8
             )
-
         except discord.HTTPException:
-
             pass
 
     # -----------------------------------------------------
@@ -393,27 +329,20 @@ async def automatic_punishment(message):
     # -----------------------------------------------------
 
     elif strikes == KICK_STRIKE:
-
         try:
-
             await message.channel.send(
                 f"{member.mention} has reached "
                 f"**{KICK_STRIKE} strikes** and has been kicked.",
                 delete_after=8
             )
-
         except discord.HTTPException:
-
             pass
 
         try:
-
             await member.kick(
                 reason="Automatic moderation: strike limit reached"
             )
-
         except discord.Forbidden:
-
             print(
                 f"Could not kick {member}."
             )
@@ -423,28 +352,21 @@ async def automatic_punishment(message):
     # -----------------------------------------------------
 
     elif strikes >= BAN_STRIKE:
-
         try:
-
             await message.channel.send(
                 f"{member.mention} has reached "
                 f"**{BAN_STRIKE} strikes** and has been banned.",
                 delete_after=8
             )
-
         except discord.HTTPException:
-
             pass
 
         try:
-
             await member.ban(
                 reason="Automatic moderation: ban strike limit reached",
                 delete_message_seconds=0
             )
-
         except discord.Forbidden:
-
             print(
                 f"Could not ban {member}."
             )
@@ -456,7 +378,6 @@ async def automatic_punishment(message):
 
 @bot.event
 async def on_message(message):
-
     if message.author.bot:
         return
 
@@ -464,9 +385,7 @@ async def on_message(message):
         return
 
     if contains_blocked_word(message.content):
-
         await automatic_punishment(message)
-
         return
 
     await bot.process_commands(message)
@@ -489,29 +408,23 @@ async def warn(
     member: discord.Member,
     reason: str = "No reason provided"
 ):
-
     moderator = interaction.user
 
     if not isinstance(moderator, discord.Member):
-
         return
 
     if not is_moderator(moderator):
-
         await interaction.response.send_message(
             "❌ You don't have permission to use this command.",
             ephemeral=True
         )
-
         return
 
     if not can_moderate(moderator, member):
-
         await interaction.response.send_message(
             "❌ You cannot moderate this member.",
             ephemeral=True
         )
-
         return
 
     strikes = add_strike(
@@ -546,64 +459,50 @@ async def mute(
     minutes: int = 15,
     reason: str = "No reason provided"
 ):
-
     moderator = interaction.user
 
     if not isinstance(moderator, discord.Member):
-
         return
 
     if not moderator.guild_permissions.moderate_members:
-
         await interaction.response.send_message(
             "❌ You don't have permission to mute members.",
             ephemeral=True
         )
-
         return
 
     if not can_moderate(moderator, member):
-
         await interaction.response.send_message(
             "❌ You cannot moderate this member.",
             ephemeral=True
         )
-
         return
 
     if minutes < 1:
-
         await interaction.response.send_message(
             "❌ Duration must be at least 1 minute.",
             ephemeral=True
         )
-
         return
 
     if minutes > 40320:
-
         await interaction.response.send_message(
             "❌ Discord's maximum timeout is 28 days.",
             ephemeral=True
         )
-
         return
 
     try:
-
         await member.timeout(
             timedelta(minutes=minutes),
             reason=reason
         )
-
         await interaction.response.send_message(
             f"🔇 {member.mention} has been timed out "
             f"for **{minutes} minutes**.\n"
             f"Reason: {reason}"
         )
-
     except discord.Forbidden:
-
         await interaction.response.send_message(
             "❌ I don't have permission to timeout that member.",
             ephemeral=True
@@ -627,44 +526,32 @@ async def kick(
     member: discord.Member,
     reason: str = "No reason provided"
 ):
-
     moderator = interaction.user
 
     if not isinstance(moderator, discord.Member):
-
         return
 
     if not moderator.guild_permissions.kick_members:
-
         await interaction.response.send_message(
             "❌ You don't have permission to kick members.",
             ephemeral=True
         )
-
         return
 
     if not can_moderate(moderator, member):
-
         await interaction.response.send_message(
             "❌ You cannot kick this member.",
             ephemeral=True
         )
-
         return
 
     try:
-
-        await member.kick(
-            reason=reason
-        )
-
+        await member.kick(reason=reason)
         await interaction.response.send_message(
             f"👢 {member.mention} was kicked.\n"
             f"Reason: {reason}"
         )
-
     except discord.Forbidden:
-
         await interaction.response.send_message(
             "❌ I don't have permission to kick that member.",
             ephemeral=True
@@ -688,45 +575,35 @@ async def ban(
     member: discord.Member,
     reason: str = "No reason provided"
 ):
-
     moderator = interaction.user
 
     if not isinstance(moderator, discord.Member):
-
         return
 
     if not moderator.guild_permissions.ban_members:
-
         await interaction.response.send_message(
             "❌ You don't have permission to ban members.",
             ephemeral=True
         )
-
         return
 
     if not can_moderate(moderator, member):
-
         await interaction.response.send_message(
             "❌ You cannot ban this member.",
             ephemeral=True
         )
-
         return
 
     try:
-
         await member.ban(
             reason=reason,
             delete_message_seconds=0
         )
-
         await interaction.response.send_message(
             f"🔨 {member.mention} was banned.\n"
             f"Reason: {reason}"
         )
-
     except discord.Forbidden:
-
         await interaction.response.send_message(
             "❌ I don't have permission to ban that member.",
             ephemeral=True
@@ -748,12 +625,10 @@ async def strikes(
     interaction,
     member: discord.Member
 ):
-
     amount = get_strikes(
         interaction.guild.id,
         member.id
     )
-
     await interaction.response.send_message(
         f"📋 {member.mention} has **{amount} strike(s)**."
     )
@@ -774,20 +649,16 @@ async def clearstrikes(
     interaction,
     member: discord.Member
 ):
-
     moderator = interaction.user
 
     if not isinstance(moderator, discord.Member):
-
         return
 
     if not is_moderator(moderator):
-
         await interaction.response.send_message(
             "❌ You don't have permission to use this command.",
             ephemeral=True
         )
-
         return
 
     clear_strikes(
@@ -809,37 +680,27 @@ async def clearstrikes(
     description="Scan accessible message history for blocked words."
 )
 async def scan(interaction):
-
     moderator = interaction.user
 
     if not isinstance(moderator, discord.Member):
-
         return
 
     if not moderator.guild_permissions.manage_messages:
-
         await interaction.response.send_message(
             "❌ You need **Manage Messages** to use /scan.",
             ephemeral=True
         )
-
         return
 
-    await interaction.response.defer(
-        ephemeral=True
-    )
+    await interaction.response.defer(ephemeral=True)
 
     guild = interaction.guild
-
     total_messages = 0
     flagged_messages = 0
     channels_scanned = 0
 
     for channel in guild.text_channels:
-
-        permissions = channel.permissions_for(
-            guild.me
-        )
+        permissions = channel.permissions_for(guild.me)
 
         if not permissions.view_channel:
             continue
@@ -850,42 +711,33 @@ async def scan(interaction):
         channels_scanned += 1
 
         try:
-
+            # Capped limit at 500 per channel to prevent rate-limit exhaustion and hanging
             async for message in channel.history(
-                limit=None,
+                limit=500,
                 oldest_first=True
             ):
-
                 total_messages += 1
 
                 if message.author.bot:
                     continue
 
-                if not contains_blocked_word(
-                    message.content
-                ):
+                if not contains_blocked_word(message.content):
                     continue
 
                 flagged_messages += 1
 
                 try:
-
                     await message.delete()
-
                 except (
                     discord.Forbidden,
                     discord.NotFound,
                     discord.HTTPException
                 ):
-
                     pass
 
                 member = message.author
 
-                if not isinstance(
-                    member,
-                    discord.Member
-                ):
+                if not isinstance(member, discord.Member):
                     continue
 
                 if member == guild.owner:
@@ -900,56 +752,35 @@ async def scan(interaction):
                 )
 
                 if strikes < KICK_STRIKE:
-
                     try:
-
                         await member.timeout(
-                            timedelta(
-                                minutes=AUTO_MUTE_MINUTES
-                            ),
+                            timedelta(minutes=AUTO_MUTE_MINUTES),
                             reason="Server scan"
                         )
-
                     except discord.Forbidden:
-
                         pass
 
                 elif strikes == KICK_STRIKE:
-
                     try:
-
                         await member.kick(
                             reason="Server scan: strike limit"
                         )
-
                     except discord.Forbidden:
-
                         pass
 
                 elif strikes >= BAN_STRIKE:
-
                     try:
-
                         await member.ban(
                             reason="Server scan: ban strike limit",
                             delete_message_seconds=0
                         )
-
                     except discord.Forbidden:
-
                         pass
 
         except discord.Forbidden:
-
-            print(
-                f"Cannot scan #{channel.name}"
-            )
-
+            print(f"Cannot scan #{channel.name}")
         except discord.HTTPException as error:
-
-            print(
-                f"Error scanning #{channel.name}: {error}"
-            )
+            print(f"Error scanning #{channel.name}: {error}")
 
     await interaction.followup.send(
         f"🔎 **Server scan complete!**\n\n"
@@ -968,29 +799,20 @@ async def command_error(
     interaction,
     error
 ):
-
-    print(
-        f"Command error: {error}"
-    )
+    print(f"Command error: {error}")
 
     try:
-
         if interaction.response.is_done():
-
             await interaction.followup.send(
                 "❌ Something went wrong.",
                 ephemeral=True
             )
-
         else:
-
             await interaction.response.send_message(
                 "❌ Something went wrong.",
                 ephemeral=True
             )
-
     except discord.HTTPException:
-
         pass
 
 
@@ -999,18 +821,13 @@ async def command_error(
 # =========================================================
 
 class HealthHandler(BaseHTTPRequestHandler):
-
     def do_GET(self):
-
         self.send_response(200)
-
         self.send_header(
             "Content-Type",
             "text/plain"
         )
-
         self.end_headers()
-
         self.wfile.write(
             b"Discord-Mod-Bot is online!"
         )
@@ -1020,28 +837,23 @@ class HealthHandler(BaseHTTPRequestHandler):
         format,
         *args
     ):
-
         pass
 
 
 def run_web_server():
-
     port = int(
         os.environ.get(
             "PORT",
             10000
         )
     )
-
     server = HTTPServer(
         ("0.0.0.0", port),
         HealthHandler
     )
-
     print(
         f"Web server running on port {port}"
     )
-
     server.serve_forever()
 
 
@@ -1050,18 +862,14 @@ def run_web_server():
 # =========================================================
 
 if not TOKEN:
-
     raise RuntimeError(
         "DISCORD_TOKEN environment variable is missing."
     )
-
 
 web_thread = threading.Thread(
     target=run_web_server,
     daemon=True
 )
-
 web_thread.start()
-
 
 bot.run(TOKEN)
