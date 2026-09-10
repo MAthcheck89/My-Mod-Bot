@@ -18,7 +18,7 @@ from discord.ext import commands
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-# 🔴 REPLACE THIS WITH YOUR ACTUAL #MOD-LOGS CHANNEL ID 🔴
+# Set to your #moderator-only channel ID
 LOG_CHANNEL_ID = 1514864605212708944  
 
 AUTO_MUTE_MINUTES = 15
@@ -301,7 +301,6 @@ async def automatic_punishment(message):
     if is_moderator(member):
         return
 
-    # Keep a copy of the message for logging before it gets deleted
     bad_message_content = message.content
     channel_mention = message.channel.mention
 
@@ -769,7 +768,7 @@ async def clearstrikes(
 
 
 # =========================================================
-# /SCAN (Announces channel status during inspection)
+# /SCAN (Announces channel status for 15 seconds)
 # =========================================================
 
 @bot.tree.command(
@@ -807,11 +806,11 @@ async def scan(interaction):
 
         channels_scanned += 1
 
-        # Send status announcement in the channel being scanned
+        # Send status announcement that stays for 15 seconds
         try:
             await channel.send(
                 f"🔎 *Channel is being scanned for moderation history...*",
-                delete_after=6
+                delete_after=15
             )
         except discord.HTTPException:
             pass
