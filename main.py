@@ -170,14 +170,17 @@ def normalize_text(text):
     return text
 
 
+# Pre-normalize blocked words once at startup for fast, whole-word matching
+NORMALIZED_BLOCKED_WORDS = {normalize_text(word) for word in BLOCKED_WORDS if normalize_text(word)}
+
 def contains_blocked_word(text):
-    normalized = normalize_text(text)
-    for word in BLOCKED_WORDS:
-        normalized_word = normalize_text(word)
-        if not normalized_word:
-            continue
-        if normalized_word in normalized:
+    # Extract individual words using regex word boundaries before stripping spaces
+    words = re.findall(r"\b\w+\b", text.lower())
+    
+    for word in words:
+        if normalize_text(word) in NORMALIZED_BLOCKED_WORDS:
             return True
+            
     return False
 
 
