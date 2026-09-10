@@ -129,6 +129,7 @@ BLOCKED_WORDS = [
     "damn",
     "dammit",
     "hell",
+    "ass",
 
     # Sexual profanity
     "slut",
@@ -138,7 +139,7 @@ BLOCKED_WORDS = [
     "hoe",
     "hoes",
 
-    # Common insults
+    # Common insults & Slurs
     "idiot",
     "idiots",
     "moron",
@@ -148,6 +149,9 @@ BLOCKED_WORDS = [
     "dumbasses",
     "retard",
     "retarded",
+    "nigger",
+    "niger", 
+    "nigga",
 
     # Harassment
     "kys",
@@ -163,17 +167,27 @@ def contains_blocked_word(text):
     text_lower = text.lower()
 
     for word in BLOCKED_WORDS:
-        # Build a regex allowing optional spaces, dots, dashes, or underscores between letters
-        pattern_chars = [re.escape(char) for char in word]
+        # The '+' catches repeated letters. 
+        # 'a' becomes 'a+', so it matches "a", "aa", "aaaa", etc.
+        pattern_chars = [re.escape(char) + r"+" for char in word]
         regex_str = r"[\s.\-_]*".join(pattern_chars)
 
         for match in re.finditer(regex_str, text_lower):
+            start_pos = match.start()
             end_pos = match.end()
-            # Prevent false positives like "hello" triggering "hell" by checking trailing characters
+
+            # Prevent false positives if the blocked word is at the END of a safe word (e.g., "grass")
+            if start_pos > 0:
+                prev_char = text_lower[start_pos - 1]
+                if prev_char.isalnum():
+                    continue
+
+            # Prevent false positives if the blocked word is at the START of a safe word (e.g., "assume")
             if end_pos < len(text_lower):
                 next_char = text_lower[end_pos]
                 if next_char.isalnum():
                     continue
+
             return True
 
     return False
