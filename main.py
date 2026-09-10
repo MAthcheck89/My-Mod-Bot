@@ -129,7 +129,7 @@ async def send_mod_log(guild, title, description, color=discord.Color.red()):
 
 
 # =========================================================
-# BLOCKED WORDS
+# BLOCKED WORDS & EMOJIS
 # =========================================================
 
 BLOCKED_WORDS = [
@@ -142,6 +142,10 @@ BLOCKED_WORDS = [
     "idiot", "idiots", "moron", "morons", "stupid", "dumbasses",
     "retard", "retarded", "nigger", "niger", "nigga",
     "kys", "killyourself",
+]
+
+BLOCKED_EMOJIS = [
+    "🍆", "💦", "😩", "😫", "🏳️‍🌈", "🏳️‍⚧️"
 ]
 
 
@@ -178,6 +182,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 intents.guilds = True
+intents.reactions = True
 
 
 # =========================================================
@@ -399,7 +404,7 @@ async def automatic_punishment(message):
 
 
 # =========================================================
-# MESSAGE EVENT
+# MESSAGE & REACTION EVENTS
 # =========================================================
 
 @bot.event
@@ -417,11 +422,89 @@ async def on_message(message):
     await bot.process_commands(message)
 
 
+@bot.event
+async def on_reaction_add(reaction, user):
+    if user.bot or not reaction.message.guild:
+        return
+
+    guild = reaction.message.guild
+    member = guild.get_member(user.id)
+    if not member or member == guild.owner or is_moderator(member):
+        return
+
+    emoji_str = str(reaction.emoji)
+
+    if emoji_str in BLOCKED_EMOJIS or any(b in emoji_str for b in BLOCKED_EMOJIS):
+        try:
+            await reaction.remove(user)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+        strikes = add_strike(guild.id, member.id)
+
+        await send_mod_log(
+            guild,
+            "🚨 Auto-Mod: Reaction Removed",
+            f"**User:** {member.mention} ({member.id})\n"
+            f"**Channel:** {reaction.message.channel.mention}\n"
+            f"**Strikes:** {strikes}\n"
+            f"**Blocked Emoji:** {emoji_str}",
+            color=discord.Color.orange()
+        )
+
+        if strikes < KICK_STRIKE:
+            try:
+                await member.timeout(timedelta(minutes=AUTO_MUTE_MINUTES), reason="Automatic moderation: blocked reaction")
+            except discord.Forbidden:
+                pass
+
+            try:
+                await reaction.message.channel.send(
+                    f"{member.mention}, that reaction is not allowed.\n"
+                    f"⚠️ You now have **{strikes} strike(s)**.",
+                    delete_after=8
+                )
+            except discord.HTTPException:
+                pass
+
+        elif strikes == KICK_STRIKE:
+            try:
+                await reaction.message.channel.send(f"{member.mention} has reached **{KICK_STRIKE} strikes** and has been kicked.", delete_after=8)
+            except discord.HTTPException:
+                pass
+
+            await send_mod_log(
+                guild, "👢 Auto-Mod: User Kicked",
+                f"**User:** {member.mention} ({member.id})\n**Reason:** Reached {KICK_STRIKE} strikes via reactions.",
+                color=discord.Color.red()
+            )
+            try:
+                await member.kick(reason="Automatic moderation: strike limit reached")
+            except discord.Forbidden:
+                pass
+
+        elif strikes >= BAN_STRIKE:
+            try:
+                await reaction.message.channel.send(f"{member.mention} has reached **{BAN_STRIKE} strikes** and has been banned.", delete_after=8)
+            except discord.HTTPException:
+                pass
+
+            await send_mod_log(
+                guild, "🔨 Auto-Mod: User Banned",
+                f"**User:** {member.mention} ({member.id})\n**Reason:** Reached {BAN_STRIKE} strikes via reactions.",
+                color=discord.Color.dark_red()
+            )
+            try:
+                await member.ban(reason="Automatic moderation: ban strike limit reached", delete_message_seconds=0)
+            except discord.Forbidden:
+                pass
+
+
 # =========================================================
-# AUTOMATIC BACKGROUND SCAN TASK (Runs every 1 minute)
+# AUTOMATIC BACKGROUND SCAN TASK (Runs every 30 seconds)
 # =========================================================
 
-@tasks.loop(minutes=1)
+@tasks.loop(seconds=30)
 async def auto_scan_loop():
     await bot.wait_until_ready()
 
@@ -443,7 +526,7 @@ async def auto_scan_loop():
                 continue
 
             try:
-                async for message in channel.history(limit=500, oldest_first=True):
+                async for message in channel.history(limit=100, oldest_first=True):
                     if message.author.bot or not contains_blocked_word(message.content):
                         continue
 
