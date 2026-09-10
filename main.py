@@ -5,14 +5,12 @@ import unicodedata
 import threading
 import time
 from collections import defaultdict, deque
-
 from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-
 
 # =========================================================
 # CONFIG
@@ -25,7 +23,7 @@ LOG_CHANNEL_ID = 1514864605212708944
 
 AUTO_MUTE_MINUTES = 15
 KICK_STRIKE = 3
-BAN_STRIKE = 5 # <-- FIXED: This was 3, making bans impossible to reach
+BAN_STRIKE = 5 
 
 # Anti-Spam Settings
 SPAM_THRESHOLD = 5
@@ -37,7 +35,6 @@ user_message_cache = defaultdict(lambda: deque(maxlen=10))
 recent_joins = deque(maxlen=50)
 RAID_JOIN_THRESHOLD = 6
 RAID_WINDOW = 10
-
 
 # =========================================================
 # DATABASE SETUP & HELPERS
@@ -58,14 +55,12 @@ def init_db():
 
 init_db()
 
-
 def get_strikes(guild_id, user_id):
     with sqlite3.connect("moderation.db") as db:
         cursor = db.cursor()
         cursor.execute("SELECT strikes FROM strikes WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
         result = cursor.fetchone()
         return result[0] if result else 0
-
 
 def add_strike(guild_id, user_id):
     current = get_strikes(guild_id, user_id)
@@ -83,13 +78,11 @@ def add_strike(guild_id, user_id):
 
     return new_amount
 
-
 def clear_strikes(guild_id, user_id):
     with sqlite3.connect("moderation.db") as db:
         cursor = db.cursor()
         cursor.execute("DELETE FROM strikes WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
         db.commit()
-
 
 # =========================================================
 # MOD LOGGING HELPER
@@ -110,9 +103,8 @@ async def send_mod_log(guild, title, description, color=discord.Color.red()):
     except discord.Forbidden:
         print("Missing permissions to send messages in the log channel.")
 
-
 # =========================================================
-# BLOCKED WORDS & EMOJIS (Updated with bypasses)
+# BLOCKED WORDS & EMOJIS 
 # =========================================================
 
 BLOCKED_WORDS = [
@@ -131,7 +123,6 @@ BLOCKED_EMOJIS = [
     "🍆", "💦", "😩", "😫", "🏳️‍🌈", "🏳️‍⚧️"
 ]
 
-
 # =========================================================
 # TEXT NORMALIZATION & BYPASS DETECTION
 # =========================================================
@@ -140,7 +131,6 @@ def contains_blocked_word(text):
     text_lower = text.lower()
 
     for word in BLOCKED_WORDS:
-        # Regex to catch spaces, dots, underscores, dashes, and repeated letters
         pattern_chars = [re.escape(char) + r"+" for char in word]
         regex_str = r"[\s.\-_,~|]*".join(pattern_chars)
 
@@ -157,7 +147,6 @@ def contains_blocked_word(text):
 
     return False
 
-
 # =========================================================
 # DISCORD INTENTS
 # =========================================================
@@ -167,7 +156,6 @@ intents.message_content = True
 intents.members = True
 intents.guilds = True
 intents.reactions = True
-
 
 class ModBot(commands.Bot):
     def __init__(self):
@@ -187,7 +175,6 @@ async def on_ready():
     print("Discord-Mod-Bot is ONLINE")
     print("=" * 50)
 
-
 # =========================================================
 # PERMISSION FUNCTIONS
 # =========================================================
@@ -201,7 +188,6 @@ def can_moderate(moderator, target):
     if target == moderator or target == moderator.guild.owner: return False
     if target.top_role >= moderator.top_role: return False
     return True
-
 
 # =========================================================
 # ANTI-SPAM & ANTI-RAID SYSTEM
@@ -237,7 +223,6 @@ async def check_anti_spam(message):
         return True
     return False
 
-
 @bot.event
 async def on_member_join(member):
     current_time = time.time()
@@ -247,9 +232,8 @@ async def on_member_join(member):
     if joins_in_window >= RAID_JOIN_THRESHOLD:
         await send_mod_log(member.guild, "🚨 Anti-Raid Alert!", f"High join rate: {joins_in_window} members in {RAID_WINDOW}s.", color=discord.Color.dark_red())
 
-
 # =========================================================
-# AUTOMATIC PUNISHMENT (Fixed Hierarchy Error Handling)
+# AUTOMATIC PUNISHMENT 
 # =========================================================
 
 async def automatic_punishment(message):
@@ -290,7 +274,6 @@ async def automatic_punishment(message):
         except discord.Forbidden:
             await send_mod_log(guild, "⚠️ Permission Error", f"Failed to ban {member.mention}. My role is lower than theirs or I lack Ban permissions.", color=discord.Color.dark_red())
 
-
 # =========================================================
 # MESSAGE & REACTION EVENTS
 # =========================================================
@@ -303,7 +286,6 @@ async def on_message(message):
         return
     if await check_anti_spam(message): return
     await bot.process_commands(message)
-
 
 @bot.event
 async def on_reaction_add(reaction, user):
@@ -329,7 +311,6 @@ async def on_reaction_add(reaction, user):
         elif strikes >= BAN_STRIKE:
             try: await member.ban(reason="Reaction block", delete_message_seconds=0)
             except: pass
-
 
 # =========================================================
 # AUTOMATIC BACKGROUND SCAN TASK
@@ -360,9 +341,8 @@ async def auto_scan_loop():
                         except: pass
             except: pass
 
-
 # =========================================================
-# STANDARD COMMANDS
+# STANDARD COMMANDS (Including Scan)
 # =========================================================
 
 @bot.tree.command(name="warn", description="Warn a member and give them a strike.")
@@ -398,6 +378,45 @@ async def clearstrikes(interaction, member: discord.Member):
     clear_strikes(interaction.guild.id, member.id)
     await interaction.response.send_message(f"✅ Cleared strikes for {member.mention}.")
 
+@bot.tree.command(name="scan", description="Manually scan a channel for blocked words and apply punishments.")
+async def scan(interaction: discord.Interaction, channel: discord.TextChannel = None, limit: int = 100):
+    if not is_moderator(interaction.user):
+        return await interaction.response.send_message("❌ Denied. You do not have permission to run manual scans.", ephemeral=True)
+
+    target_channel = channel or interaction.channel
+    await interaction.response.send_message(f"🔍 Scanning {target_channel.mention} (Checking last {limit} messages)...", ephemeral=True)
+
+    deleted_count = 0
+    punished_count = 0
+
+    try:
+        async for message in target_channel.history(limit=limit):
+            if message.author.bot: 
+                continue
+                
+            if contains_blocked_word(message.content):
+                try:
+                    await message.delete()
+                    deleted_count += 1
+                    
+                    member = message.author
+                    if isinstance(member, discord.Member) and member != interaction.guild.owner and not is_moderator(member):
+                        strikes = add_strike(interaction.guild.id, member.id)
+                        punished_count += 1
+                        
+                        if strikes == KICK_STRIKE:
+                            try: await member.kick(reason="Manual scan detection")
+                            except: pass
+                        elif strikes >= BAN_STRIKE:
+                            try: await member.ban(reason="Manual scan detection", delete_message_seconds=0)
+                            except: pass
+                except discord.Forbidden:
+                    pass 
+                    
+        await interaction.followup.send(f"✅ **Scan complete in {target_channel.mention}**\n🗑️ Deleted `{deleted_count}` messages.\n⚠️ Applied strikes to `{punished_count}` users.", ephemeral=True)
+        
+    except discord.Forbidden:
+        await interaction.followup.send("❌ Error: I lack permissions to read history or manage messages in that channel.", ephemeral=True)
 
 # =========================================================
 # RENDER WEB SERVER
