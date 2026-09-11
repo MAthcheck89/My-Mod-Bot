@@ -144,7 +144,7 @@ BLOCKED_WORDS = [
 ]
 
 BLOCKED_EMOJIS = [
-    "🍆", "💦", "😩", "😫", "🏳️‍🌈", "🏳️‍⚧️", "🖕"
+    "🍆", "💦", "😩", "😫", "🏳️‍🌈", "🏳️‍⚧️"
 ]
 
 
@@ -651,6 +651,55 @@ async def ban(interaction: discord.Interaction, member: discord.Member, reason: 
         await interaction.response.send_message(f"🔨 {member.mention} was banned.\nReason: {reason}")
     except discord.Forbidden:
         await interaction.response.send_message("❌ I don't have permission to ban that member.", ephemeral=True)
+
+
+@bot.tree.command(name="unban", description="Unban a user and DM them an invite link.")
+@app_commands.describe(user="The user to unban (select them or paste their ID)", reason="Reason for the unban")
+async def unban(interaction: discord.Interaction, user: discord.User, reason: str = "No reason provided"):
+    moderator = interaction.user
+    
+    if not isinstance(moderator, discord.Member) or not moderator.guild_permissions.ban_members:
+        await interaction.response.send_message("❌ You don't have permission to unban members.", ephemeral=True)
+        return
+
+    try:
+        # Unban the user
+        await interaction.guild.unban(user, reason=reason)
+        
+        # Create a one-time use invite link from the channel the command was run in
+        invite = await interaction.channel.create_invite(
+            max_uses=1, 
+            max_age=86400, # 24 hours
+            reason=f"Unban invite for {user.name}"
+        )
+        
+        # Attempt to DM the user
+        dm_status = ""
+        try:
+            await user.send(
+                f"You have been unbanned from **{interaction.guild.name}**.\n"
+                f"**Reason:** {reason}\n"
+                f"Here is your invite link to rejoin: {invite.url}"
+            )
+            dm_status = "and an invite link was sent to their DMs."
+        except discord.Forbidden:
+            dm_status = "but their DMs are closed or we don't share a server, so the invite wasn't sent."
+        
+        # Log the action
+        await send_mod_log(
+            interaction.guild, 
+            "🕊️ User Unbanned", 
+            f"**Target:** {user.mention} ({user.id})\n**Moderator:** {moderator.mention}\n**Reason:** {reason}", 
+            color=discord.Color.green()
+        )
+        
+        # Respond to the moderator
+        await interaction.response.send_message(f"✅ {user.mention} was unbanned {dm_status}")
+        
+    except discord.NotFound:
+        await interaction.response.send_message(f"❌ {user.mention} is not currently banned.", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.response.send_message("❌ I don't have permission to unban that user.", ephemeral=True)
 
 
 @bot.tree.command(name="strikes", description="Check a member's strikes.")
