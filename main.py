@@ -20,7 +20,10 @@ from discord.ext import commands, tasks
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 # Set to your #moderator-only channel ID
-LOG_CHANNEL_ID = 1514864605212708944  
+LOG_CHANNEL_ID = 1514864605212708944
+
+# Channels fully exempt from moderation (words, spam, reactions, scans)
+EXCLUDED_CHANNEL_IDS = {1554868744872788028}
 
 AUTO_MUTE_MINUTES = 15
 KICK_STRIKE = 3
@@ -36,6 +39,16 @@ user_message_cache = defaultdict(lambda: deque(maxlen=10))
 recent_joins = deque(maxlen=50)
 RAID_JOIN_THRESHOLD = 6
 RAID_WINDOW = 10
+
+
+def is_excluded_channel(channel):
+    """True if the channel (or the parent channel of a thread) is exempt."""
+    if channel is None:
+        return False
+    if channel.id in EXCLUDED_CHANNEL_IDS:
+        return True
+    # Threads/forum posts inherit exemption from their parent channel
+    return getattr(channel, "parent_id", None) in EXCLUDED_CHANNEL_IDS
 
 
 # =========================================================
@@ -114,12 +127,12 @@ def clear_strikes(guild_id, user_id):
 async def send_mod_log(guild, title, description, color=discord.Color.red()):
     if not LOG_CHANNEL_ID:
         return
-        
+
     log_channel = guild.get_channel(LOG_CHANNEL_ID)
     if not log_channel:
         print("Warning: Log channel not found. Check the LOG_CHANNEL_ID.")
         return
-        
+
     embed = discord.Embed(title=title, description=description, color=color)
     try:
         await log_channel.send(embed=embed)
@@ -254,6 +267,9 @@ async def check_anti_spam(message):
     if message.author.bot or not message.guild:
         return False
 
+    if is_excluded_channel(message.channel):
+        return False
+
     member = message.author
     if not isinstance(member, discord.Member):
         return False
@@ -329,6 +345,9 @@ async def automatic_punishment(message):
     member = message.author
     guild = message.guild
 
+    if is_excluded_channel(message.channel):
+        return
+
     if not isinstance(member, discord.Member):
         return
 
@@ -344,7 +363,7 @@ async def automatic_punishment(message):
         pass
 
     strikes = add_strike(guild.id, member.id)
-    
+
     await send_mod_log(
         guild,
         "🚨 Auto-Mod: Message Deleted",
@@ -377,7 +396,7 @@ async def automatic_punishment(message):
             await message.channel.send(f"{member.mention} has reached **{KICK_STRIKE} strikes** and has been kicked.", delete_after=8)
         except discord.HTTPException:
             pass
-            
+
         await send_mod_log(
             guild, "👢 Auto-Mod: User Kicked",
             f"**User:** {member.mention} ({member.id})\n**Reason:** Reached {KICK_STRIKE} strikes.",
@@ -393,7 +412,7 @@ async def automatic_punishment(message):
             await message.channel.send(f"{member.mention} has reached **{BAN_STRIKE} strikes** and has been banned.", delete_after=8)
         except discord.HTTPException:
             pass
-            
+
         await send_mod_log(
             guild, "🔨 Auto-Mod: User Banned",
             f"**User:** {member.mention} ({member.id})\n**Reason:** Reached {BAN_STRIKE} strikes.",
@@ -414,6 +433,11 @@ async def on_message(message):
     if message.author.bot or message.guild is None:
         return
 
+    # Excluded channels skip all moderation but still allow prefix commands
+    if is_excluded_channel(message.channel):
+        await bot.process_commands(message)
+        return
+
     if contains_blocked_word(message.content):
         await automatic_punishment(message)
         return
@@ -427,6 +451,9 @@ async def on_message(message):
 @bot.event
 async def on_reaction_add(reaction, user):
     if user.bot or not reaction.message.guild:
+        return
+
+    if is_excluded_channel(reaction.message.channel):
         return
 
     guild = reaction.message.guild
@@ -512,7 +539,7 @@ async def auto_scan_loop():
 
     for guild in bot.guilds:
         log_channel = guild.get_channel(LOG_CHANNEL_ID)
-        
+
         if log_channel:
             try:
                 await log_channel.send(
@@ -523,6 +550,9 @@ async def auto_scan_loop():
                 pass
 
         for channel in guild.text_channels:
+            if is_excluded_channel(channel):
+                continue
+
             permissions = channel.permissions_for(guild.me)
             if not permissions.view_channel or not permissions.read_message_history:
                 continue
@@ -543,7 +573,7 @@ async def auto_scan_loop():
                         continue
 
                     strikes = add_strike(guild.id, member.id)
-                    
+
                     await send_mod_log(
                         guild,
                         "🔎 Automated Scan: Message Deleted",
@@ -657,7 +687,7 @@ async def ban(interaction: discord.Interaction, member: discord.Member, reason: 
 @app_commands.describe(user="The user to unban (select them or paste their ID)", reason="Reason for the unban")
 async def unban(interaction: discord.Interaction, user: discord.User, reason: str = "No reason provided"):
     moderator = interaction.user
-    
+
     if not isinstance(moderator, discord.Member) or not moderator.guild_permissions.ban_members:
         await interaction.response.send_message("❌ You don't have permission to unban members.", ephemeral=True)
         return
@@ -665,14 +695,14 @@ async def unban(interaction: discord.Interaction, user: discord.User, reason: st
     try:
         # Unban the user
         await interaction.guild.unban(user, reason=reason)
-        
+
         # Create a one-time use invite link from the channel the command was run in
         invite = await interaction.channel.create_invite(
-            max_uses=1, 
-            max_age=86400, # 24 hours
+            max_uses=1,
+            max_age=86400,  # 24 hours
             reason=f"Unban invite for {user.name}"
         )
-        
+
         # Attempt to DM the user
         dm_status = ""
         try:
@@ -684,18 +714,18 @@ async def unban(interaction: discord.Interaction, user: discord.User, reason: st
             dm_status = "and an invite link was sent to their DMs."
         except discord.Forbidden:
             dm_status = "but their DMs are closed or we don't share a server, so the invite wasn't sent."
-        
+
         # Log the action
         await send_mod_log(
-            interaction.guild, 
-            "🕊️ User Unbanned", 
-            f"**Target:** {user.mention} ({user.id})\n**Moderator:** {moderator.mention}\n**Reason:** {reason}", 
+            interaction.guild,
+            "🕊️ User Unbanned",
+            f"**Target:** {user.mention} ({user.id})\n**Moderator:** {moderator.mention}\n**Reason:** {reason}",
             color=discord.Color.green()
         )
-        
+
         # Respond to the moderator
         await interaction.response.send_message(f"✅ {user.mention} was unbanned {dm_status}")
-        
+
     except discord.NotFound:
         await interaction.response.send_message(f"❌ {user.mention} is not currently banned.", ephemeral=True)
     except discord.Forbidden:
@@ -739,13 +769,16 @@ async def scan(interaction: discord.Interaction):
     if log_channel:
         try:
             await log_channel.send(
-                f"🔎 *Channel is being scanned for moderation history...*",
+                "🔎 *Channel is being scanned for moderation history...*",
                 delete_after=15
             )
         except discord.HTTPException:
             pass
 
     for channel in guild.text_channels:
+        if is_excluded_channel(channel):
+            continue
+
         permissions = channel.permissions_for(guild.me)
         if not permissions.view_channel or not permissions.read_message_history:
             continue
